@@ -112,12 +112,25 @@ class MCP:
 
     def close(self):
         if self.proc.poll() is None:
-            self.proc.terminate()
+            # Signal graceful MCP shutdown via stdin EOF.
             try:
-                self.proc.wait(timeout=3)
+                self.proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+
+            try:
+                self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=3)
+                # Graceful shutdown failed.
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait()
+
+        self.proc.stdout.close()
+        self.proc.stderr.close()
         self.stderr_thread.join(timeout=2)
 
 
@@ -258,6 +271,19 @@ def main():
                                (stage, elapsed, args.slow))
         return msg
 
+    def wait_for_focus(app, iteration):
+        for attempt in range(50):
+            try:
+                call("window", {
+                    "action": "focus",
+                    "app": app
+                }, iteration)
+                return
+            except ReproFailure:
+                if attempt == 49:
+                    raise
+                time.sleep(0.1)
+
     def call(name, arguments, iteration=0):
         msg, elapsed = mcp.request("tools/call", {"name": name, "arguments": arguments})
         return record(name, msg, elapsed, arguments, iteration)
@@ -332,19 +358,14 @@ def main():
                     "path": "Finder > About Finder"
                 }, loops)
 
-                result = call("verify_state", {
-                    "app": "Finder",
-                    "window_title": "About Finder",
-                    "predicates": [
-                        {"kind": "window_exists", "expected": True}
-                    ],
-                    "stable_samples": 2,
-                    "timeout_ms": 5000
-                }, loops)
+                wait_for_focus("Finder", loops)
 
                 call("see", {"app_target": "frontmost"}, loops)
-                call("press", {"key": "w", "modifiers": ["cmd"],
-                               "app": "Finder", "foreground": True}, loops)
+                call("press", {
+                    "key": "w",
+                    "modifiers": ["cmd"],
+                    "foreground": True
+                }, loops)
                 call("window", {
                     "action": "focus",
                     "app": "Terminal",
